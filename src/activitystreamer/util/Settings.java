@@ -19,8 +19,6 @@ public class Settings {
 	private static String secret = null;
 	private static String username = "anonymous";
 	private static boolean serverFlag = false;
-	private static int nonSecure = 0;
-	
 	
 	public static int getLocalPort() {
 		return localPort;
@@ -92,14 +90,6 @@ public class Settings {
 
 	public static void setServerFlag(boolean serverFlag) {
 		Settings.serverFlag = serverFlag;
-	}
-	
-	public static int getNonSecure() {
-		return nonSecure;
-	}
-
-	public static void setNonSecure(int nonSecure) {
-		Settings.nonSecure = nonSecure;
 	}
 	
 	/*

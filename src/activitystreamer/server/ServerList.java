@@ -5,14 +5,12 @@ public class ServerList {
 	private int port;
 	private String host;
 	private int clientLoad;
-	//private int secure;
 	
 	public ServerList() {
 		serverID = null;
 		port = -1;
 		host = null;
 		clientLoad = -1;
-		//secure = -1;
 	}
 	
 	public String getServerID() {
@@ -38,14 +36,6 @@ public class ServerList {
 	}
 	public void setClientLoad(int clienLoad) {
 		this.clientLoad = clienLoad;
-	}
-	/*public int getSecure() {
-		return secure;
-	}
-
-	public void setSecure(int secure) {
-		this.secure = secure;
-	}*/
-	
+	}	       
 
 }
