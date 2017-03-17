@@ -33,6 +33,7 @@ public class Client {
 		options.addOption("rp",true,"remote port number");
 		options.addOption("rh",true,"remote hostname");
 		options.addOption("s",true,"secret for username");
+		options.addOption("ns",true,"connecting to a non-secure socket. Just set it as 1.");
 		
 		
 		// build the parser
@@ -57,6 +58,17 @@ public class Client {
 				log.error("-rp requires a port number, parsed: "+cmd.getOptionValue("rp"));
 				help(options);
 			}
+		}
+		
+		if(cmd.hasOption("ns")){
+			try{
+				int ns = Integer.parseInt(cmd.getOptionValue("ns"));
+				Settings.setNonSecure(ns);
+			} catch (NumberFormatException e){
+				log.error("-ns requires a number, parsed: "+cmd.getOptionValue("ns"));
+				help(options);
+			}
+			//Settings.setNonSecure(cmd.getOptionValue("ns"));
 		}
 		
 		if(cmd.hasOption("s")){

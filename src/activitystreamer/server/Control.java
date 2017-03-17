@@ -1,11 +1,20 @@
 package activitystreamer.server;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.Socket;
+import java.security.KeyStore;
 import java.util.ArrayList;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+
 
 import activitystreamer.util.Settings;
 
@@ -18,6 +27,8 @@ public class Control extends Thread {
 	// Server incoming connections for each server.
 	private static ArrayList<Connection> servIncomConnections;
 	
+	private SSLSocketFactory sslsocketfactory ;
+
 	private static boolean term=false;
 	private static Listener listener;
 	
@@ -31,6 +42,28 @@ public class Control extends Thread {
 	}
 	
 	public Control() {
+		
+		
+		try
+		{
+		TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        KeyStore keystore = KeyStore.getInstance(KeyStore.getDefaultType());
+        InputStream keystoreStream = this.getClass().getClassLoader().getResourceAsStream("store/mykey"); // note, not getSYSTEMResourceAsStream
+        keystore.load(keystoreStream, "123456".toCharArray());
+        trustManagerFactory.init(keystore);
+        TrustManager[] trustManagers = trustManagerFactory.getTrustManagers();
+        SSLContext ctx = SSLContext.getInstance("SSL");
+        //SSLContext.setDefault(ctx); 
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        kmf.init(keystore, "123456".toCharArray());
+        ctx.init(kmf.getKeyManagers(), trustManagers, null);
+        SSLContext.setDefault(ctx); 
+		}
+		catch(Exception e)
+		{
+			log.info("closing connection allapinne");
+		}
+		
 		// initialize the connections array
 		connections = new ArrayList<Connection>();
 		servConnections = new ArrayList<Connection>();
@@ -49,12 +82,28 @@ public class Control extends Thread {
 		if(Settings.getRemoteHostname()!=null){
 			try {
 				log.debug("outgoing to another server");
-				outgoingConnection(new Socket(Settings.getRemoteHostname(),Settings.getRemotePort()));
+				sslsocketfactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+				//socket = (SSLSocket) sslsocketfactory.createSocket(Settings.getRemoteHostname(), Settings.getRemotePort());
+				outgoingConnection((SSLSocket) sslsocketfactory.createSocket(Settings.getRemoteHostname(), Settings.getRemotePort()));
 			} catch (IOException e) {
 				log.error("failed to make connection to "+Settings.getRemoteHostname()+":"+Settings.getRemotePort()+" :"+e);
 				System.exit(-1);
 			}
 		}
+	}
+	
+	public void initiateConnectionNonSSl(){
+		// make a connection to another server if remote hostname is supplied
+		if(Settings.getRemoteHostname()!=null){
+			try {
+				log.debug("outgoing to another server");
+				outgoingConnectionNonSSl(new Socket(Settings.getRemoteHostname(),Settings.getRemotePort()));
+			} catch (IOException e) {
+				log.error("failed to make connection to "+Settings.getRemoteHostname()+":"+Settings.getRemotePort()+" :"+e);
+				System.exit(-1);
+			}
+		}
+
 	}
 	
 	/*
@@ -75,7 +124,7 @@ public class Control extends Thread {
 	/*
 	 * A new incoming connection has been established, and a reference is returned to it
 	 */
-	public synchronized Connection incomingConnection(Socket s) throws IOException{
+	public synchronized Connection incomingConnection(SSLSocket s) throws IOException{
 		log.debug("incomming connection: "+Settings.socketAddress(s));
 		Connection c = new Connection(s);
 		connections.add(c);
@@ -83,15 +132,31 @@ public class Control extends Thread {
 		
 	}
 	
+	/*public synchronized Connection incomingConnectionNonSSl(Socket s) throws IOException {
+		// TODO Auto-generated method stub
+		log.debug("incomming connection: "+Settings.socketAddress(s));
+		Connection c = new Connection(s);
+		connections.add(c);
+		return c;
+	}*/
+	
 	/*
 	 * A new outgoing connection has been established, and a reference is returned to it
 	 */
-	public synchronized Connection outgoingConnection(Socket s) throws IOException{
+	public synchronized Connection outgoingConnection(SSLSocket s) throws IOException{
 		log.debug("outgoing connection: "+Settings.socketAddress(s));
 		Connection c = new Connection(s);
 		servConnections.add(c);
 		return c;
 		
+	}
+	
+	public synchronized Connection outgoingConnectionNonSSl(Socket s) throws IOException {
+		// TODO Auto-generated method stub
+		log.debug("outgoing connection to non-ssl: "+Settings.socketAddress(s));
+		Connection c = new Connection(s);
+		servConnections.add(c);
+		return c;
 	}
 	
 	@Override
@@ -150,5 +215,7 @@ public class Control extends Thread {
 	public static void removeServIncomConnections(Connection c) {
 		Control.servIncomConnections.remove(c);
 	}
+
+	
 	
 }

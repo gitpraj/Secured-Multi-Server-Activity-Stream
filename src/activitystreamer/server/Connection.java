@@ -5,15 +5,25 @@ import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.security.KeyStore;
 import java.util.HashMap;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+
 
 import activitystreamer.util.Settings;
+import java.lang.reflect.*;
 
 
 public class Connection extends Thread {
@@ -27,6 +37,25 @@ public class Connection extends Thread {
 	private boolean term=false;
 	
 	Connection(Socket socket) throws IOException{
+			/*try
+			{
+				TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+				KeyStore keystore = KeyStore.getInstance(KeyStore.getDefaultType());
+				InputStream keystoreStream = this.getClass().getClassLoader().getResourceAsStream("store/MyPrivateKey.store"); // note, not getSYSTEMResourceAsStream
+				keystore.load(keystoreStream, "123456".toCharArray());
+				trustManagerFactory.init(keystore);
+				TrustManager[] trustManagers = trustManagerFactory.getTrustManagers();
+				SSLContext ctx = SSLContext.getInstance("SSL");
+				KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+				kmf.init(keystore, "123456".toCharArray());
+				ctx.init(kmf.getKeyManagers(), trustManagers, null);
+				SSLContext.setDefault(ctx); 
+			}
+			catch(Exception e)
+			{
+				log.info("closing connection allapinne");
+			}*/
+		
 		in = new DataInputStream(socket.getInputStream());
 	    out = new DataOutputStream(socket.getOutputStream());
 	    inreader = new BufferedReader( new InputStreamReader(in));
@@ -68,6 +97,7 @@ public class Connection extends Thread {
 		try {
 			String data;
 			while(!term && (data = inreader.readLine())!=null){
+				//term=Control.getInstance().process(this,data);
 				Control.getInstance().process(this,data);
 			}
 			log.debug("connection closed to "+Settings.socketAddress(socket));

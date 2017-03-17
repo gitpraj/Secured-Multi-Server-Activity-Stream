@@ -38,6 +38,7 @@ public class Server {
 		options.addOption("lh",true,"local hostname");
 		options.addOption("a",true,"activity interval in milliseconds");
 		options.addOption("s",true,"secret for the server to use");
+		options.addOption("ns",true,"connecting to a non-secure socket. Just set it as 1");
 		
 		
 		// build the parser
@@ -62,6 +63,17 @@ public class Server {
 		
 		if(cmd.hasOption("rh")){
 			Settings.setRemoteHostname(cmd.getOptionValue("rh"));
+		}
+		
+		if(cmd.hasOption("ns")){
+			try{
+				int ns = Integer.parseInt(cmd.getOptionValue("ns"));
+				Settings.setNonSecure(ns);
+			} catch (NumberFormatException e){
+				log.error("-ns requires a number, parsed: "+cmd.getOptionValue("ns"));
+				help(options);
+			}
+			//Settings.setNonSecure(cmd.getOptionValue("ns"));
 		}
 		
 		if(cmd.hasOption("rp")){

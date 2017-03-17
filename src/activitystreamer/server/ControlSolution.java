@@ -1,8 +1,10 @@
 package activitystreamer.server;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.Socket;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.io.BufferedReader;
@@ -15,6 +17,12 @@ import org.apache.logging.log4j.Logger;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 
 import com.google.gson.Gson;
 
@@ -31,13 +39,16 @@ public class ControlSolution extends Control {
 	private static HashMap<Connection, String> userCon;
 	// UserName with login flag for server in the system
 	private static HashMap<String, String> userSysLogin;
+	// Serverid with connection object for sending lock allowed/denied
+	private static HashMap<String, Connection> serverCon;
 	
 	private static String serverSecret;
 	static int load;
 	String id;
+	private int newServer;
 	// Server connections list
 	private static ArrayList<ServerList> serverList;
-	// Keeping track of lock allowed mesages
+	// Keeping track of lock allowed messages
 	private static HashMap<String, Integer> lockAllow;
 	private static Connection conForRegister;
 	
@@ -55,16 +66,39 @@ public class ControlSolution extends Control {
 	
 	public ControlSolution() {
 		super();
+		
+			try
+			{
+				TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+				KeyStore keystore = KeyStore.getInstance(KeyStore.getDefaultType());
+				InputStream keystoreStream = this.getClass().getClassLoader().getResourceAsStream("store/mykey"); // note, not getSYSTEMResourceAsStream
+				keystore.load(keystoreStream, "123456".toCharArray());
+				trustManagerFactory.init(keystore);
+				TrustManager[] trustManagers = trustManagerFactory.getTrustManagers();
+				SSLContext ctx = SSLContext.getInstance("SSL");
+				//SSLContext.setDefault(ctx); 
+				KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+				kmf.init(keystore, "123456".toCharArray());
+				ctx.init(kmf.getKeyManagers(), trustManagers, null);
+				SSLContext.setDefault(ctx); 
+			}
+			catch(Exception e)
+			{
+				log.info("closing connection allapinne");
+			}
+		
 		userSec = new HashMap<String, String>();
 		userLogin = new HashMap<String, Integer>();
 		userCon = new HashMap<Connection, String>();
 		serverList = new ArrayList<ServerList>(); 
 		lockAllow = new HashMap<String, Integer>();
 		userSysLogin = new HashMap<String, String>();
+		serverCon = new HashMap<String, Connection>();
 		
 		serverSecret = null;
 		load = 0;
 		conForRegister = null;
+		newServer = 1;
 		
 		id = Settings.nextSecret();
 		// Server details getting stored. Port and it's corresponding secret.
@@ -86,7 +120,11 @@ public class ControlSolution extends Control {
 
 		
 		// check if we should initiate a connection and do so if necessary
-		initiateConnection();
+		if (Settings.getNonSecure() == 0) {
+			initiateConnection();
+		} else {
+			initiateConnectionNonSSl();
+		}
 		// start the server's activity loop
 		// it will call doActivity every few seconds
 		start();
@@ -97,7 +135,7 @@ public class ControlSolution extends Control {
 	 * a new incoming connection
 	 */
 	@Override
-	public Connection incomingConnection(Socket s) throws IOException{
+	public Connection incomingConnection(SSLSocket s) throws IOException{
 		boolean term=true;
 		Connection con = super.incomingConnection(s);
 		/*
@@ -107,16 +145,34 @@ public class ControlSolution extends Control {
 		return con;
 	}
 	
+	/*public synchronized Connection incomingConnectionNonSSl(Socket s) throws IOException {
+		// TODO Auto-generated method stub
+		boolean term=true;
+		Connection con = super.incomingConnectionNonSSl(s);
+		return con;
+	}*/
+	
 	/*
 	 * a new outgoing connection
 	 */
 	@Override
-	public Connection outgoingConnection(Socket s) throws IOException{
+	public Connection outgoingConnection(SSLSocket s) throws IOException{
 		Connection con = super.outgoingConnection(s);
 		/*
 		 * do additional things here
 		 */
-		log.debug("In outgoing connection controls solution");
+		//log.debug("In outgoing connection controls solution");
+		sendToAnotherServer(con);
+		
+		return con;
+	}
+	
+	public Connection outgoingConnectionNonSSl(Socket s) throws IOException{
+		Connection con = super.outgoingConnectionNonSSl(s);
+		/*
+		 * do additional things here
+		 */
+		//log.debug("In outgoing connection controls solution");
 		sendToAnotherServer(con);
 		
 		return con;
@@ -132,6 +188,7 @@ public class ControlSolution extends Control {
 			if ((Settings.getSecret().length() != 0)) {
 				obj.put("command", "AUTHENTICATE");
 				obj.put("secret", Settings.getSecret());
+				obj.put("serverid", id);
 			} else if ((Settings.getUsername().length() != 0) && (Settings.getSecret().length() == 0)){
 				obj.put("command", "INVALID_MESSAGE");
 				obj.put("info", "the received message did not contain a command");
@@ -171,8 +228,10 @@ public class ControlSolution extends Control {
 	 * process incoming msg, from connection con
 	 * return true if the connection should be closed, false otherwise
 	 */
+	@SuppressWarnings("unchecked")
 	@Override
 	public synchronized boolean process(Connection con,String msg){
+		//System.out.println("In process control solution");
 		boolean term=false;
 		String msg1 = msg.trim().replaceAll("\r","").replaceAll("\n","").replaceAll("\t", "");
 		//log.debug(msg1);
@@ -188,7 +247,7 @@ public class ControlSolution extends Control {
 		}
 
 		JSONObject jsonObject = (JSONObject) obj;
-
+		//jsonObject.put("secure", 1);
 		term=parseMsg(jsonObject, con);
 		
 		return term;
@@ -197,8 +256,10 @@ public class ControlSolution extends Control {
 	@SuppressWarnings("unchecked")
 	public synchronized boolean parseMsg(JSONObject jsonObject, Connection con) {
 	
+		//System.out.println("In parseMsg");
 		String command = (String) jsonObject.get("command");
 		String serverId;
+		ArrayList<String> children;
 		boolean term=false;
 		JSONObject obj = new JSONObject();
 		if (command == null) {
@@ -228,28 +289,63 @@ public class ControlSolution extends Control {
 			lock_request(jsonObject, con);
 		} else if (command.compareTo("LOCK_ALLOWED") == 0) 
 		{
-			// Keep count of the lock allowed messages
-			 serverId = (String) jsonObject.get("serverid");
-			if(serverId.compareTo(id)==0)
-			{
-				lockAllow.put((String)jsonObject.get("server"), 1);
-				if (lockAllow.size() == serverList.size())
-				{
-					if(lockAllow.containsValue(0))
+			
+			children = (ArrayList<String>) jsonObject.get("children");
+			if (children == null) {
+				// Backward compatibility
+				//System.out.println("In backward compat. parsemsg");
+				 serverId = (String) jsonObject.get("serverid");
+					if(serverId.compareTo(id)==0)
 					{
-						JSONObject obj1 = new JSONObject();
-						obj1.put("command", "REGISTER_FAILED");
-						obj1.put("info", (String) jsonObject.get("username") + " is already registered with the system");
-						incrementLoad();
-						Gson gs=new Gson();
-						String msg = gs.toJson(obj1);
-						conForRegister.writeMsg(msg);
-						conForRegister.closeCon();
-						connectionClosed(conForRegister);
-						//term = true;
+						lockAllow.put((String)jsonObject.get("server"), 1);
+						if (lockAllow.size() == serverList.size())
+						{
+							if(lockAllow.containsValue(0))
+							{
+								JSONObject obj1 = new JSONObject();
+								obj1.put("command", "REGISTER_FAILED");
+								obj1.put("info", (String) jsonObject.get("username") + " is already registered with the system");
+								incrementLoad();
+								Gson gs=new Gson();
+								String msg = gs.toJson(obj1);
+								conForRegister.writeMsg(msg);
+								conForRegister.closeCon();
+								connectionClosed(conForRegister);
+								//term = true;
+							}
+							else {
+								// Now register it
+								String secret = (String) jsonObject.get("secret");
+								String userName = (String) jsonObject.get("username");
+								userSec.put(userName, secret);
+								obj.put("command", "REGISTER_SUCCESS");
+								obj.put("info", "register success for " + userName);
+								
+								// Send it to client
+								Gson gs=new Gson();
+								String msg = gs.toJson(obj);
+								if (conForRegister != null)
+									conForRegister.writeMsg(msg);
+							}
+						} else if ((newServer == 1) && (lockAllow.size() != serverList.size())) {
+							// Control is here when new server that sends lock request receives lock allowed
+							// from old server but still waiting for more lock allowed messages
+							
+							// First clear the hashmap and then acts as an old server.
+							//lockAllow.clear();
+							newServer = 0;
+							sendLockRequestBackwardCompat(jsonObject, con);
+						}
+					} else
+					{
+						lock_allowed(jsonObject, con);
 					}
-					else {
-						// Now register it
+			} else {
+				// Keep count of the lock allowed messages
+				//System.out.println("In lock allowed. Parsemsg");
+			 	serverId = (String) jsonObject.get("serverid");
+			 	if(serverId.compareTo(id)==0)
+			 	{
 						String secret = (String) jsonObject.get("secret");
 						String userName = (String) jsonObject.get("username");
 						userSec.put(userName, secret);
@@ -261,28 +357,66 @@ public class ControlSolution extends Control {
 						String msg = gs.toJson(obj);
 						if (conForRegister != null)
 							conForRegister.writeMsg(msg);
-					}
-				}
-			} else
-			{
-				lock_allowed(jsonObject, con);
+			 	} else {
+			 		lock_allowed(jsonObject, con);
+			 	}
 			}
 		} else if (command.compareTo("LOCK_DENIED") == 0) {
-			 serverId = (String) jsonObject.get("serverid");
-			//lockAllow.put(serverId, 1);
-			if(serverId.compareTo(id)==0)
-			{
-				lockAllow.put((String)jsonObject.get("server"), 0);
-				
-				// dont register
-				if (lockAllow.size() == serverList.size())
-				{
-					//System.out.println("Inside inside 0");
-					if(lockAllow.containsValue(0))
+			children = (ArrayList<String>) jsonObject.get("children");
+			if (children == null) {
+				// Backward Compatibility
+				 serverId = (String) jsonObject.get("serverid");
+					//lockAllow.put(serverId, 1);
+					if(serverId.compareTo(id)==0)
 					{
+						lockAllow.put((String)jsonObject.get("server"), 0);
+						
+						// dont register
+						if (lockAllow.size() == serverList.size())
+						{
+							//System.out.println("Inside inside 0");
+							if(lockAllow.containsValue(0))
+							{
+								JSONObject obj1 = new JSONObject();
+								obj1.put("command", "REGISTER_FAILED");
+								obj1.put("info", (String) jsonObject.get("username") + " is already registered with the system");
+								incrementLoad();
+								Gson gs=new Gson();
+								String msg = gs.toJson(obj1);
+								log.debug(conForRegister.getSocket());
+								
+								conForRegister.writeMsg(msg);
+								conForRegister.closeCon();
+								connectionClosed(conForRegister);
+								//term = true;
+							}
+						}
+						
+						
+						
+					}
+					else {
+						lock_denied(jsonObject, con);
+					}
+			} else {
+			 	serverId = (String) jsonObject.get("serverid");
+			 	//lockAllow.put(serverId, 1);
+			 	if(serverId.compareTo(id)==0)
+			 	{
+			 		String secret = (String) jsonObject.get("secret");
+			 		String userName = (String) jsonObject.get("username");
 						JSONObject obj1 = new JSONObject();
+						
 						obj1.put("command", "REGISTER_FAILED");
-						obj1.put("info", (String) jsonObject.get("username") + " is already registered with the system");
+						obj1.put("info", (String) jsonObject.get("username") + " is already registered with the system. "
+								+ "Please login.");
+						
+						if (userSysLogin.containsKey(userName) != true) {
+							//System.out.println("UserName is : " + userName);
+							//System.out.println("Secret is : " + secret);
+							//System.out.println("Adding user details into userSysLogin.");
+							userSysLogin.put(userName, secret);
+						}
 						incrementLoad();
 						Gson gs=new Gson();
 						String msg = gs.toJson(obj1);
@@ -290,16 +424,11 @@ public class ControlSolution extends Control {
 						
 						conForRegister.writeMsg(msg);
 						conForRegister.closeCon();
-						connectionClosed(conForRegister);
-						//term = true;
-					}
-				}
-				
-				
-				
+						connectionClosed(conForRegister);				
+			 	} else {
+			 		lock_denied(jsonObject, con);
+			 	}
 			}
-			else
-				lock_denied(jsonObject, con);
 		} else {
 			obj.put("command", "INVALID_MESSAGE");
 			obj.put("info", "No userName provided");
@@ -315,15 +444,18 @@ public class ControlSolution extends Control {
 	@SuppressWarnings("static-access")
 	private void server_announce(JSONObject jsonobject, Connection con) {
 		// TODO Auto-generated method stub
-		long load = -1, port = -1;
+		long load = -1, port = -1, secure = -1;
 		int flag = 0;
 		String command = (String) jsonobject.get("command");
 		String id_serv = (String) jsonobject.get("id");
 		load = (long) jsonobject.get("load");
 		String hostname = (String) jsonobject.get("hostname");
 		port = (long) jsonobject.get("port");
+		//secure = (long) jsonobject.get("secure");
 		ServerList list1 = new ServerList();
 		ArrayList <Connection> conn = getServIncomConnections();
+		//System.out.println("Receiving server_announce message");
+		
 		
 		if ((command != null) && (command.length() > 0)) {
 			//System.out.println(command);
@@ -353,7 +485,7 @@ public class ControlSolution extends Control {
 					list1.setPort((int)port);
 				}
 				
-				log.info("Adding to server list");
+				log.info("New server added to Server list");
 				if (list1 != null) {
 					serverList.add(list1);
 				}	
@@ -376,6 +508,7 @@ public class ControlSolution extends Control {
 		obj.put("load",list.getClientLoad());
 		obj.put("hostname", list.getHost());
 		obj.put("port",list.getPort());
+		//obj.put("secure", 1);
 		
 		ArrayList <Connection> conn = getServIncomConnections();
 		for(Connection server_con : conn)
@@ -540,6 +673,7 @@ public class ControlSolution extends Control {
 		 * do additional work here
 		 * return true/false as appropriate
 		 */
+		//System.out.println("Do activity in in in");
 		String loadStr = Integer.toString(load);
 		
 		// The client load should be broadcasted within the network.
@@ -549,6 +683,8 @@ public class ControlSolution extends Control {
 		obj.put("load", getLoad());
 		obj.put("hostname", Settings.getLocalHostname());
 		obj.put("port", Settings.getLocalPort());
+		// Add a field which differentiates between secured and non-secured servers
+		//obj.put("secure", 1);
 		
 		System.out.println("SERVER LOAD: " + getLoad());
 
@@ -644,9 +780,9 @@ public class ControlSolution extends Control {
 			redirect(con);
 		}
 		if (logout_flag == 1) {
+			incrementLoad();
 			connectionClosed(con);
 			con.closeCon();
-			incrementLoad();
 			//term = true;
 		}
 		
@@ -694,6 +830,7 @@ public class ControlSolution extends Control {
 			String msg = gs.toJson(obj);
 			con.writeMsg(msg);
 			// disconnect the client
+			//incrementLoad();
 			connectionClosed(con);
 			con.closeCon();
 		}
@@ -719,24 +856,32 @@ public class ControlSolution extends Control {
 						Gson gs=new Gson();
 						String msg = gs.toJson(obj);
 						con.writeMsg(msg);
+						incrementLoad();
 						connectionClosed(con);
 						con.closeCon();
-						incrementLoad();
 						//term = true;
 					} else {
 						obj.put("command", "REGISTER_FAILED");
-						obj.put("info", userName + " is already registered with the system");
+						obj.put("info", userName + " is already registered with the system. Please login.");
 						Gson gs=new Gson();
 						String msg = gs.toJson(obj);
 						con.writeMsg(msg);
-						connectionClosed(con);
-						con.closeCon();
 						incrementLoad();
+						connectionClosed(con);
+						con.closeCon();						
 						//term = true;
 					}
-				}
-				else {
-						// send a lock request to all other servers and then register 
+				} else if (userSysLogin.containsKey(userName) == true) {
+					obj.put("command", "REGISTER_FAILED");
+					obj.put("info", userName + " is already registered with the system. Please login.");
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj);
+					con.writeMsg(msg);
+					incrementLoad();
+					connectionClosed(con);
+					con.closeCon();
+				} else {
+						// send a lock request to parent servers and then register 
 						// if the name is not registered at any server
 						if (serverList.isEmpty() != true) {
 							sendLockRequest(jsonObject, con);
@@ -756,6 +901,178 @@ public class ControlSolution extends Control {
 		
 	@SuppressWarnings("unchecked")
 	public synchronized void lock_request(JSONObject jsonObject, Connection con) {
+		
+		String userName = (String) jsonObject.get("username");
+		String secret = (String) jsonObject.get("secret");
+		String serverid=(String) jsonObject.get("serverid");
+		//String servid = (String) jsonObject.get("id");
+		Connection conToSendBack = null;
+		String servidToSend = null;
+		//obj.put("child", children);
+		//String[] children = (String[]) jsonObject.get("children");
+		ArrayList<String> children;
+		children = (ArrayList<String>) jsonObject.get("children");
+		
+		/*ArrayList <Connection> conn = getServIncomConnections();
+		for(Connection conne : conn) {
+			if (conne != con) {
+				Gson gs=new Gson();
+				String msg = gs.toJson(jsonObject);
+				conne.writeMsg(msg);
+			}
+		}*/
+	
+		if (children == null) {
+			//System.out.println("In lock request backward");
+			lock_request_backward(jsonObject, con);
+			return;
+		}
+		
+		// Add children id's for traceback. Dont add if the messages is at the root server.
+		ArrayList <Connection> connn = getServConnections();
+		if (connn.isEmpty() != true) {
+			children.add(id);
+			jsonObject.put("children", children);
+		//jsonObject.put("id", id);
+		}
+		
+		// Forward this request to the parent server. If the request is already at the root
+		// server. Stop and send lock denied/allowed messages back to the children.
+		//ArrayList <Connection> connn = getServConnections();
+		if (connn.isEmpty() != true) {
+			//System.out.println("Lock request in parent server.");
+			for(Connection connne : connn) {
+				if (connne != con) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(jsonObject);
+					connne.writeMsg(msg);
+				} else {
+					//System.out.println("Stuck at this point. Handle backword compatibility.");
+					lock_request_backward(jsonObject, con);
+				}
+			}
+		} else {
+			// Root server. Root server is the only that sends lock denied and lock allowed
+			// messages.
+			//System.out.println("Lock request in root server, so dont forward anything");
+		
+		
+		
+		// Then handle lock requests
+			if ((userSec.containsKey(userName) == true) || (userSysLogin.containsKey(userName) == true)) {
+				// Send lock denied
+				JSONObject obj1 = new JSONObject();
+				obj1.put("command", "LOCK_DENIED");
+				obj1.put("username", userName);
+				obj1.put("secret", secret);
+				obj1.put("server", id);
+				obj1.put("serverid",serverid );
+				
+				if (children != null && !children.isEmpty()) {
+					  servidToSend = children.get(children.size()-1);
+				
+					  children.remove(children.size()-1);
+					obj1.put("children", children);
+			
+					//System.out.println("root server sending lock denied");
+			
+					if (serverCon != null) {
+						conToSendBack = serverCon.get(servidToSend);
+					}
+				
+				// Send it to the particular child which forwarded the lock request.
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj1);
+					conToSendBack.writeMsg(msg);
+				} else {
+					// Backward compatibility
+					//System.out.println("Backward compatibility");
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj1);
+					con.writeMsg(msg);
+				}
+				
+				/*ArrayList <Connection> conn1 = getServIncomConnections();
+				for(Connection conne : conn1) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj1);
+					conne.writeMsg(msg);
+				
+				}*/
+			/*
+			ArrayList <Connection> connn1 = getServConnections();
+			for(Connection connne : connn1) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj1);
+					connne.writeMsg(msg);
+				
+			}*/
+			
+			} else {
+				// Send lock allowed
+				JSONObject obj1 = new JSONObject();
+				obj1.put("command", "LOCK_ALLOWED");
+				obj1.put("username", userName);
+				obj1.put("secret", secret);
+				obj1.put("server", id);
+				obj1.put("serverid", serverid);
+				//System.out.println("lock allowed");
+				if (userSysLogin.containsKey(userName) != true) {
+					//System.out.println("Adding user details to userSysLogin");
+					userSysLogin.put(userName, secret);
+				}
+				
+				if (children != null && !children.isEmpty()) {
+						//System.out.println("Children size : " + children);
+					  servidToSend = children.get(children.size()-1);
+				
+					  //System.out.println("servidToSend is : " + servidToSend);
+					  children.remove(children.size()-1);
+					  obj1.put("children", children);
+			
+					  //System.out.println("root server sending lock allowed");
+			
+					  if (serverCon.isEmpty() != true) {
+						  //System.out.println("serverCon is not empty");
+						  conToSendBack = serverCon.get(servidToSend);
+					  }
+				
+					  if (conToSendBack == null) {
+						  //System.out.println("conToSendBack is null");
+					  } else {
+						  //System.out.println("conToSendBack is not null");
+					  }
+				
+					  // Send it to the particular child which forwarded the lock request.
+					  Gson gs=new Gson();
+					  String msg = gs.toJson(obj1);
+					  conToSendBack.writeMsg(msg);
+				} else {
+					// Backward compatibility
+					//System.out.println("Backward compatibility");
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj1);
+					con.writeMsg(msg);
+				}
+			/*ArrayList <Connection> conn1 = getServIncomConnections();
+			for(Connection conne : conn1) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj1);
+					conne.writeMsg(msg);
+				
+			}
+			ArrayList <Connection> connn1 = getServConnections();
+			for(Connection connne : connn1) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj1);
+					connne.writeMsg(msg);
+				
+			}*/
+			}
+		}
+	}
+	
+	public synchronized void lock_request_backward(JSONObject jsonObject, Connection con) {
 		
 		String userName = (String) jsonObject.get("username");
 		String secret = (String) jsonObject.get("secret");
@@ -817,7 +1134,7 @@ public class ControlSolution extends Control {
 			if (userSysLogin.containsKey(userName) != true) {
 				userSysLogin.put(userName, secret);
 			}
-			
+			//System.out.println("Sending lock allowed");
 			ArrayList <Connection> conn1 = getServIncomConnections();
 			for(Connection conne : conn1) {
 					Gson gs=new Gson();
@@ -833,14 +1150,59 @@ public class ControlSolution extends Control {
 				
 			}
 		}
-		
+	
 	}
 	
+	@SuppressWarnings("unchecked")
 	public synchronized void lock_denied(JSONObject jsonObject, Connection con) {
 		String userName = (String) jsonObject.get("username");
 		String secret = (String) jsonObject.get("secret");
+		Connection conToSendBack = null;
+		String servidToSend = null;
+		ArrayList<String> children;
+		children = (ArrayList<String>) jsonObject.get("children");
 		
-		ArrayList <Connection> conn1 = getServIncomConnections();
+		if (userSysLogin.containsKey(userName) != true) {
+			userSysLogin.put(userName, secret);
+		}
+		
+		if (children != null && !children.isEmpty()) {
+			  servidToSend = children.get(children.size()-1);
+		
+			  children.remove(children.size()-1);
+			  jsonObject.put("children", children);
+	
+			  //System.out.println("child server sending lock denied to next child");
+	
+			  if (serverCon != null) {
+				  conToSendBack = serverCon.get(servidToSend);
+			  }
+		
+			  // Send it to the particular child which forwarded the lock request.
+			  Gson gs=new Gson();
+			  String msg = gs.toJson(jsonObject);
+			  conToSendBack.writeMsg(msg);
+		} else {
+			// Backward compatibility
+			ArrayList <Connection> conn1 = getServIncomConnections();
+			for(Connection conne : conn1) {
+				if (conne != con) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(jsonObject);
+					conne.writeMsg(msg);
+				}
+			}
+			ArrayList <Connection> connn1 = getServConnections();
+			for(Connection connne : connn1) {
+				if (connne != con) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(jsonObject);
+					connne.writeMsg(msg);
+				}
+			}
+		}
+		
+		/*ArrayList <Connection> conn1 = getServIncomConnections();
 		for(Connection conne : conn1) {
 			if (conne != con) {
 				Gson gs=new Gson();
@@ -855,7 +1217,7 @@ public class ControlSolution extends Control {
 				String msg = gs.toJson(jsonObject);
 				connne.writeMsg(msg);
 			}
-		}
+		}*/
 	}
 	
 	@SuppressWarnings("unchecked")
@@ -863,8 +1225,56 @@ public class ControlSolution extends Control {
 		
 		String userName = (String) jsonObject.get("username");
 		String secret = (String) jsonObject.get("secret");
+		Connection conToSendBack = null;
+		String servidToSend = null;
+		ArrayList<String> children;
 		
-		ArrayList <Connection> conn1 = getServIncomConnections();
+		children = (ArrayList<String>) jsonObject.get("children");
+		
+		if (userSysLogin.containsKey(userName) != true) {
+			//System.out.println("policepolice");
+			userSysLogin.put(userName, secret);
+		}
+		
+		if (children != null && !children.isEmpty()) {
+			//System.out.println("Children : " + children);
+			  servidToSend = children.get(children.size()-1);
+		
+			  children.remove(children.size()-1);
+			  jsonObject.put("children", children);
+	
+			  //System.out.println("child server sending lock allowed to next child");
+	
+			  if (serverCon != null) {
+				  conToSendBack = serverCon.get(servidToSend);
+			  }
+		
+			  // Send it to the particular child which forwarded the lock request.
+			  Gson gs=new Gson();
+			  String msg = gs.toJson(jsonObject);
+			  conToSendBack.writeMsg(msg);
+		} else {
+			//System.out.println("In backward. lock allowed");
+			// Backward compatibility
+			ArrayList <Connection> conn1 = getServIncomConnections();
+			for(Connection conne : conn1) {
+				if (conne != con) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(jsonObject);
+					conne.writeMsg(msg);
+				}
+			}
+			ArrayList <Connection> connn1 = getServConnections();
+			for(Connection connne : connn1) {
+				if (connne != con) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(jsonObject);
+					connne.writeMsg(msg);
+				}
+			}
+		}
+		
+		/*ArrayList <Connection> conn1 = getServIncomConnections();
 		for(Connection conne : conn1) {
 			if (conne != con) {
 				Gson gs=new Gson();
@@ -879,12 +1289,71 @@ public class ControlSolution extends Control {
 				String msg = gs.toJson(jsonObject);
 				connne.writeMsg(msg);
 			}
-		}
+		}*/
 	}
 	
 	
 	@SuppressWarnings("unchecked")
 	public synchronized void sendLockRequest(JSONObject jsonObject, Connection con) {
+		
+		String userName = (String) jsonObject.get("username");
+		String secret = (String) jsonObject.get("secret");
+		
+		JSONObject obj = new JSONObject();
+		obj.put("command", "LOCK_REQUEST");
+		obj.put("username", userName);
+		obj.put("secret", secret);
+		obj.put("serverid", id);
+		//obj.put("id", id);
+		// Add children id's for traceback
+		ArrayList<String> children = new ArrayList<String>(); 	
+		//String[] children = new String[1];
+		children.add(id);
+		obj.put("children", children);
+		
+		// Broadcast to the parent servers i.e. outgoing connections  - getServConnections()
+				/*ArrayList <Connection> conn = getServIncomConnections();
+				for(Connection conne : conn) {
+					Gson gs=new Gson();
+					String msg = gs.toJson(obj);
+					conne.writeMsg(msg);
+				}*/
+				ArrayList <Connection> connn = getServConnections();
+				if (connn.isEmpty() != true) {
+					//System.out.println("conn is not empty. Sendlockrequest");
+					for(Connection connne : connn) {
+						Gson gs=new Gson();
+						String msg = gs.toJson(obj);
+						connne.writeMsg(msg);
+					}
+				} else {
+					// Root server. No need of sending lock requests.
+					//System.out.println("Root server. No need of sending lock requests");
+					if ((userSysLogin.containsKey(userName)) &&
+							(secret.compareTo(userSysLogin.get(userName)) == 0)) {
+						// It is already registered.
+						obj.put("command", "REGISTER_FAILED");
+						obj.put("info", userName + " is already registered with the system. Please login.");
+						Gson gs=new Gson();
+						String msg = gs.toJson(obj);
+						con.writeMsg(msg);
+						incrementLoad();
+						connectionClosed(con);
+						con.closeCon();
+						
+					} else {
+						// Not registered
+						userSec.put(userName, secret);
+						obj.put("command", "REGISTER_SUCCESS");
+						obj.put("info", "register success for " + userName);
+						Gson gs=new Gson();
+						String msg = gs.toJson(obj);
+						con.writeMsg(msg);						
+					}
+				}
+	}
+	
+public synchronized void sendLockRequestBackwardCompat(JSONObject jsonObject, Connection con) {
 		
 		String userName = (String) jsonObject.get("username");
 		String secret = (String) jsonObject.get("secret");
@@ -903,13 +1372,14 @@ public class ControlSolution extends Control {
 					String msg = gs.toJson(obj);
 					conne.writeMsg(msg);
 				}
-				ArrayList <Connection> connn = getServConnections();
+				/*ArrayList <Connection> connn = getServConnections();
 				for(Connection connne : connn) {
 					Gson gs=new Gson();
 					String msg = gs.toJson(obj);
 					connne.writeMsg(msg);
-				}
+				}*/
 	}
+
 	
 	
 	public boolean logout(JSONObject jsonObject, Connection con) {
@@ -930,6 +1400,7 @@ public class ControlSolution extends Control {
 	public void authenticate(JSONObject jsonobject, Connection con) {
 		String command = (String) jsonobject.get("command");
 		String secret = (String) jsonobject.get("secret");
+		String servid = (String) jsonobject.get("serverid");
 		JSONObject obj = new JSONObject();
 		int logout_flag = 1;
 		
@@ -944,6 +1415,9 @@ public class ControlSolution extends Control {
 			serverSecret = secret;
 			// Add connection to servIncomConnections
 			addServIncomConnections(con);
+			// Add serverid and respective con to the hashmap
+			serverCon.put(servid, con);
+			
 			return;
 		}
 		
@@ -951,6 +1425,7 @@ public class ControlSolution extends Control {
 		String msg = gs.toJson(obj);
 		con.writeMsg(msg);
 		if (logout_flag == 1) {
+			incrementLoad();
 			connectionClosed(con);
 			con.closeCon();
 		}
